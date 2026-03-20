@@ -10,3 +10,8 @@ logs/
 htmlcov/
 dist/
 *.egg-info/
+.env
+venv/
+__pycache__/
+data/cache/
+logs/

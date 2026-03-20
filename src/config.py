@@ -22,6 +22,16 @@ class Config:
     max_total_exposure_pct: float
     log_level: str
     db_path: str
+    # Confirmation indicator params
+    rsi_period: int = 14
+    rsi_overbought: float = 70.0
+    rsi_oversold: float = 30.0
+    bb_period: int = 20
+    bb_std_dev: float = 2.0
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal_period: int = 9
+    min_confirmations: int = 1
 
 
 def load_config() -> Config:
@@ -57,6 +67,16 @@ def load_config() -> Config:
     if not (0 < max_total_exposure_pct <= 1.0):
         raise ValueError("MAX_TOTAL_EXPOSURE_PCT must be between 0 and 1")
 
+    rsi_period = int(os.environ.get("RSI_PERIOD", "14"))
+    rsi_overbought = float(os.environ.get("RSI_OVERBOUGHT", "70.0"))
+    rsi_oversold = float(os.environ.get("RSI_OVERSOLD", "30.0"))
+    bb_period = int(os.environ.get("BB_PERIOD", "20"))
+    bb_std_dev = float(os.environ.get("BB_STD_DEV", "2.0"))
+    macd_fast = int(os.environ.get("MACD_FAST", "12"))
+    macd_slow = int(os.environ.get("MACD_SLOW", "26"))
+    macd_signal_period = int(os.environ.get("MACD_SIGNAL", "9"))
+    min_confirmations = int(os.environ.get("MIN_CONFIRMATIONS", "1"))
+
     return Config(
         api_key_id=api_key_id,
         api_secret_key=api_secret_key,
@@ -69,4 +89,13 @@ def load_config() -> Config:
         max_total_exposure_pct=max_total_exposure_pct,
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
         db_path=os.environ.get("DB_PATH", "trading_bot.db"),
+        rsi_period=rsi_period,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+        bb_period=bb_period,
+        bb_std_dev=bb_std_dev,
+        macd_fast=macd_fast,
+        macd_slow=macd_slow,
+        macd_signal_period=macd_signal_period,
+        min_confirmations=min_confirmations,
     )

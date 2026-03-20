@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 
 import pandas as pd
 
@@ -16,6 +16,14 @@ class Signal:
     long_ma: float
     confidence: float
     timestamp: datetime
+    # Optional confirmation indicator values (None when not computed)
+    rsi: Optional[float] = field(default=None)
+    bb_upper: Optional[float] = field(default=None)
+    bb_mid: Optional[float] = field(default=None)
+    bb_lower: Optional[float] = field(default=None)
+    macd: Optional[float] = field(default=None)
+    macd_signal: Optional[float] = field(default=None)
+    macd_hist: Optional[float] = field(default=None)
 
 
 class Strategy(ABC):

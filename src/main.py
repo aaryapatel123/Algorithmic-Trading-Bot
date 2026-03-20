@@ -17,7 +17,7 @@ from src.models.trade import (
     set_state,
 )
 from src.risk.position_sizer import PositionSizer
-from src.strategy.ma_crossover import MACrossoverStrategy
+from src.strategy.multi_signal import MultiSignalStrategy
 from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -34,9 +34,18 @@ class TradingBot:
 
         self._broker = AlpacaBroker(self._config)
         self._data = AlpacaDataProvider(self._broker._api)
-        self._strategy = MACrossoverStrategy(
+        self._strategy = MultiSignalStrategy(
             short_period=self._config.short_ma_period,
             long_period=self._config.long_ma_period,
+            rsi_period=self._config.rsi_period,
+            rsi_overbought=self._config.rsi_overbought,
+            rsi_oversold=self._config.rsi_oversold,
+            bb_period=self._config.bb_period,
+            bb_std_dev=self._config.bb_std_dev,
+            macd_fast=self._config.macd_fast,
+            macd_slow=self._config.macd_slow,
+            macd_signal_period=self._config.macd_signal_period,
+            min_confirmations=self._config.min_confirmations,
         )
         self._sizer = PositionSizer(self._config)
         self._running = False
@@ -86,7 +95,12 @@ class TradingBot:
                 logger.error("Error processing %s: %s", symbol, exc, exc_info=True)
 
     def _process_symbol(self, symbol, account, positions) -> None:
-        bars_needed = self._config.long_ma_period + 10  # buffer
+        bars_needed = max(
+            self._config.long_ma_period + 1,
+            self._config.bb_period,
+            self._config.macd_slow + self._config.macd_signal_period,
+            self._config.rsi_period + 1,
+        ) + 10  # extra buffer
         bars = self._data.get_historical_bars(
             symbol, self._config.bar_timeframe, limit=bars_needed
         )

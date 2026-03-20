@@ -1,12 +1,31 @@
 # Trading Bot
 
-Python algorithmic trading bot implementing a Simple Moving Average (SMA) crossover strategy for US equities, using Alpaca paper trading.
+Python algorithmic trading bot implementing a combined three-strategy momentum system for US equities, using Alpaca paper trading.
 
 ## Strategy
 
-- **BUY** when the short-period SMA crosses above the long-period SMA (golden cross)
-- **SELL** when the short-period SMA crosses below the long-period SMA (death cross)
-- Default periods: 20-day short, 50-day long
+The bot uses a **Combined Momentum System** that layers three signals to decide what to hold each month:
+
+### 1. S&P 500 Stock Momentum
+Every month on the first trading day, ranks all S&P 500 constituents by 12-month return and buys the top 3 stocks.
+
+### 2. Dual Momentum (SPY vs AGG)
+Compares the 12-month return of SPY (US stocks) against AGG (US bonds). If bonds are outperforming stocks, the portfolio rotates to AGG instead of equities.
+
+### 3. 200-Day MA Crash Protection
+If SPY closes below its 200-day moving average, the portfolio exits to cash or AGG to protect against sustained downtrends.
+
+**Rebalancing schedule:** First trading day of each month.
+
+## Backtest Results (2015–2026)
+
+| Metric | Strategy | SPY Buy & Hold |
+|--------|----------|----------------|
+| Total Return | +772% | +288% |
+| Sharpe Ratio | 0.59 | 0.55 |
+| Max Drawdown | 42.4% | — |
+
+Notable: the strategy avoided the COVID crash (2020), the 2018 Q4 selloff, and the 2022 bear market by rotating to bonds/cash via the crash protection filters.
 
 ## Prerequisites
 
@@ -25,19 +44,16 @@ pip install -r requirements.txt
 
 # Copy and fill in your credentials
 cp .env.example .env
-# Edit .env with your APCA_API_KEY_ID and APCA_API_SECRET_KEY
+# Edit .env with your ALPACA_API_KEY and ALPACA_SECRET_KEY
 ```
 
 ## Configuration (`.env`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `APCA_API_KEY_ID` | required | Alpaca API key |
-| `APCA_API_SECRET_KEY` | required | Alpaca API secret |
-| `APCA_API_BASE_URL` | `https://paper-api.alpaca.markets` | Paper trading URL |
-| `SYMBOLS` | required | Comma-separated symbols, e.g. `AAPL,MSFT` |
-| `SHORT_MA_PERIOD` | `20` | Short SMA period |
-| `LONG_MA_PERIOD` | `50` | Long SMA period |
+| `ALPACA_API_KEY` | required | Alpaca API key |
+| `ALPACA_SECRET_KEY` | required | Alpaca API secret |
+| `ALPACA_BASE_URL` | `https://paper-api.alpaca.markets` | Paper trading URL |
 | `MAX_POSITION_PCT` | `0.10` | Max portfolio % per position |
 | `MAX_TOTAL_EXPOSURE_PCT` | `0.50` | Max total equity exposure |
 | `LOG_LEVEL` | `INFO` | Logging level |
@@ -57,10 +73,13 @@ Stop with `Ctrl+C` — the bot shuts down gracefully.
 ```bash
 source venv/bin/activate
 
-# Default: AAPL, 2-year lookback, 20/50 SMA, $100k starting cash
+# Run the combined momentum strategy backtest (2015–2026)
+python scripts/run_combined.py
+
+# Run the original MA crossover backtest
 python scripts/run_backtest.py
 
-# Custom parameters
+# Custom parameters for MA crossover backtest
 python scripts/run_backtest.py --symbol MSFT --start 2022-01-01 --end 2024-01-01 \
     --short-ma 10 --long-ma 30 --cash 50000
 ```
@@ -79,7 +98,7 @@ src/
 ├── main.py              # Orchestration loop — market hours → fetch → signal → order → persist
 ├── config.py            # Environment-based configuration with validation
 ├── strategy/
-│   └── ma_crossover.py  # Pure SMA crossover signal computation
+│   └── ma_crossover.py  # SMA crossover signal computation
 ├── broker/
 │   └── alpaca_client.py # Alpaca REST API wrapper (orders, positions, clock)
 ├── data/
@@ -92,10 +111,12 @@ src/
     └── logging_config.py # Rotating file + console JSON logging
 
 backtest/
-└── bt_ma_crossover.py   # Backtrader strategy with Sharpe/drawdown analyzers
+├── bt_ma_crossover.py   # Backtrader MA crossover strategy with Sharpe/drawdown analyzers
+└── bt_combined.py       # Combined momentum strategy backtest (dual momentum + MA filter)
 
 scripts/
-└── run_backtest.py      # CLI backtest runner
+├── run_backtest.py      # CLI runner for MA crossover backtest
+└── run_combined.py      # CLI runner for combined momentum strategy backtest
 ```
 
 ## Risk Controls
@@ -105,3 +126,4 @@ scripts/
 - Total exposure cap (default 50% of equity)
 - Market-hours enforcement (no orders when market is closed)
 - Duplicate signal prevention (won't re-fire for the same bar after restart)
+- Automatic rotation to bonds/cash during downtrends (200-day MA filter)

@@ -6,31 +6,34 @@ from typing import Optional
 
 import pandas as pd
 import yfinance as yf
+from alpaca.data import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
 
 from src.data.base import DataProvider
 
 logger = logging.getLogger(__name__)
 
 _ALPACA_TIMEFRAME_MAP = {
-    "1D": "day",
-    "1H": "hour",
-    "1Min": "minute",
+    "1D": TimeFrame.Day,
+    "1H": TimeFrame.Hour,
+    "1Min": TimeFrame.Minute,
 }
 _MAX_RETRIES = 3
 _RETRY_DELAY = 2.0  # seconds
 
 
 class AlpacaDataProvider(DataProvider):
-    def __init__(self, rest_client) -> None:
-        self._rest = rest_client
+    def __init__(self, client: StockHistoricalDataClient) -> None:
+        self._client = client
 
     def get_historical_bars(
         self,
         symbol: str,
         timeframe: str = "1D",
-        limit: int = 100,
+        limit: int = 300,
     ) -> pd.DataFrame:
-        timeframe_key = _ALPACA_TIMEFRAME_MAP.get(timeframe, "day")
+        timeframe_key = _ALPACA_TIMEFRAME_MAP.get(timeframe, TimeFrame.Day)
         bars = self._fetch_with_retry(symbol, timeframe_key, limit)
 
         if bars is not None and not bars.empty:
@@ -44,25 +47,30 @@ class AlpacaDataProvider(DataProvider):
     def _fetch_with_retry(
         self,
         symbol: str,
-        timeframe: str,
+        timeframe: TimeFrame,
         limit: int,
     ) -> Optional[pd.DataFrame]:
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                barset = self._rest.get_barset(symbol, timeframe, limit=limit)
+                request = StockBarsRequest(
+                    symbol_or_symbols=symbol,
+                    timeframe=timeframe,
+                    limit=limit,
+                )
+                barset = self._client.get_stock_bars(request)
                 bars = barset[symbol]
                 if not bars:
                     return None
 
                 df = pd.DataFrame(
                     {
-                        "open": [b.o for b in bars],
-                        "high": [b.h for b in bars],
-                        "low": [b.l for b in bars],
-                        "close": [b.c for b in bars],
-                        "volume": [b.v for b in bars],
+                        "open": [b.open for b in bars],
+                        "high": [b.high for b in bars],
+                        "low": [b.low for b in bars],
+                        "close": [b.close for b in bars],
+                        "volume": [b.volume for b in bars],
                     },
-                    index=pd.to_datetime([b.t for b in bars], utc=True),
+                    index=pd.to_datetime([b.timestamp for b in bars], utc=True),
                 )
                 df.sort_index(inplace=True)
                 logger.debug(

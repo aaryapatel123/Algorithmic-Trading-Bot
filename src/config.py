@@ -35,14 +35,14 @@ class Config:
 
 
 def load_config() -> Config:
-    api_key_id = os.environ.get("APCA_API_KEY_ID", "")
-    api_secret_key = os.environ.get("APCA_API_SECRET_KEY", "")
-    base_url = os.environ.get("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+    api_key_id = os.environ.get("ALPACA_API_KEY", "")
+    api_secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+    base_url = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
     if not api_key_id:
-        raise ValueError("APCA_API_KEY_ID environment variable is required")
+        raise ValueError("ALPACA_API_KEY environment variable is required")
     if not api_secret_key:
-        raise ValueError("APCA_API_SECRET_KEY environment variable is required")
+        raise ValueError("ALPACA_SECRET_KEY environment variable is required")
 
     symbols_raw = os.environ.get("SYMBOLS", "")
     symbols = [s.strip().upper() for s in symbols_raw.split(",") if s.strip()]

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import time
 from datetime import datetime, timezone
+
+from alpaca.data import StockHistoricalDataClient
 
 from src.broker.alpaca_client import AlpacaBroker
 from src.config import load_config
@@ -33,7 +36,11 @@ class TradingBot:
         init_db(self._config.db_path)
 
         self._broker = AlpacaBroker(self._config)
-        self._data = AlpacaDataProvider(self._broker._api)
+        data_client = StockHistoricalDataClient(
+            api_key=os.getenv('ALPACA_API_KEY'),
+            secret_key=os.getenv('ALPACA_SECRET_KEY'),
+        )
+        self._data = AlpacaDataProvider(data_client)
         self._strategy = MultiSignalStrategy(
             short_period=self._config.short_ma_period,
             long_period=self._config.long_ma_period,
@@ -182,6 +189,8 @@ class TradingBot:
 
 
 def main() -> None:
+    from dotenv import load_dotenv
+    load_dotenv()
     TradingBot().run()
 
 

@@ -4,6 +4,10 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest
+
 from src.broker.base import AccountInfo, Broker, ClockInfo, OrderResult, PositionInfo
 from src.config import Config
 
@@ -12,17 +16,16 @@ logger = logging.getLogger(__name__)
 
 class AlpacaBroker(Broker):
     def __init__(self, config: Config) -> None:
-        import alpaca_trade_api as tradeapi
-
-        self._api = tradeapi.REST(
-            key_id=config.api_key_id,
+        self._client = TradingClient(
+            api_key=config.api_key_id,
             secret_key=config.api_secret_key,
-            base_url=config.base_url,
+            paper=True,
+            url_override=config.base_url,
         )
         logger.info("Alpaca broker initialized (base_url=%s)", config.base_url)
 
     def get_account(self) -> AccountInfo:
-        account = self._api.get_account()
+        account = self._client.get_account()
         return AccountInfo(
             equity=float(account.equity),
             cash=float(account.cash),
@@ -31,15 +34,14 @@ class AlpacaBroker(Broker):
         )
 
     def get_positions(self) -> List[PositionInfo]:
-        positions = self._api.list_positions()
+        positions = self._client.get_all_positions()
         return [self._map_position(p) for p in positions]
 
     def get_position(self, symbol: str) -> Optional[PositionInfo]:
         try:
-            pos = self._api.get_position(symbol)
+            pos = self._client.get_open_position(symbol)
             return self._map_position(pos)
         except Exception as exc:
-            # Alpaca raises an exception (404) when position doesn't exist
             if "position does not exist" in str(exc).lower() or "404" in str(exc):
                 return None
             raise
@@ -52,19 +54,20 @@ class AlpacaBroker(Broker):
     ) -> OrderResult:
         logger.info("Submitting %s order: %s x%d", side.upper(), symbol, qty)
         try:
-            order = self._api.submit_order(
+            order_side = OrderSide.BUY if side == "buy" else OrderSide.SELL
+            order_request = MarketOrderRequest(
                 symbol=symbol,
-                qty=str(qty),
-                side=side,
-                type="market",
-                time_in_force="day",
+                qty=qty,
+                side=order_side,
+                time_in_force=TimeInForce.DAY,
             )
+            order = self._client.submit_order(order_request)
             result = OrderResult(
-                order_id=order.id,
+                order_id=str(order.id),
                 symbol=order.symbol,
                 qty=int(order.qty),
-                side=order.side,
-                status=order.status,
+                side=order.side.value,
+                status=order.status.value,
                 submitted_at=self._parse_dt(order.submitted_at),
             )
             logger.info(
@@ -79,7 +82,7 @@ class AlpacaBroker(Broker):
         return self.get_clock().is_open
 
     def get_clock(self) -> ClockInfo:
-        clock = self._api.get_clock()
+        clock = self._client.get_clock()
         return ClockInfo(
             is_open=clock.is_open,
             next_open=self._parse_dt(clock.next_open),

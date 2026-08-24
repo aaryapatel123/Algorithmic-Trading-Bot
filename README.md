@@ -120,16 +120,6 @@ Key structural findings from parameter research (see `scripts/compare_*.py`, `sc
 - A 25% per-name catastrophic stop (intraday-style daily check against average cost) was accepted based on out-of-sample evidence, despite making the historical GFC drawdown worse — see above.
 - Inverse-vol/ERC reweighting, GDP-based recession rotation, and dynamic (stress-triggered) sleeve sizing were all tested and rejected or not promoted — in this concentrated momentum book, broadening, reweighting, or timing the signal has consistently traded away more return than the drawdown protection it bought.
 
-**Combined 3-strategy momentum system** (`src/main.py`'s live strategy — dual momentum + 200-day MA filter + top-3 stock selection), 2015–2026 backtest:
-
-| Metric | Strategy | SPY Buy & Hold |
-|--------|----------|----------------|
-| Total Return | +772% | +288% |
-| Sharpe Ratio | 0.59 | 0.55 |
-| Max Drawdown | 42.4% | — |
-
-The strategy's crash-protection filters rotated it out of equities ahead of the COVID crash (2020), the 2018 Q4 selloff, and the 2022 bear market.
-
 All figures above are backtested, not live-trading results, and are sensitive to universe composition, survivorship bias, and the specific historical window tested — see the disclaimer below.
 
 ## Tests

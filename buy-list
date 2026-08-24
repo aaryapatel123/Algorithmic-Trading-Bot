@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Convenience launcher for the buy-list calculator.
+# Runs scripts/buy_list.py with the project's virtualenv interpreter so it works
+# without manually activating the venv. Pass through any args, e.g. ./buy-list 50000
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$DIR/venv/bin/python" "$DIR/scripts/buy_list.py" "$@"

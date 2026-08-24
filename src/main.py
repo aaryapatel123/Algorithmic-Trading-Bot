@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import logging
-import os
+import math
 import signal
 import time
 from datetime import datetime, timezone
+from typing import Dict, List
 
-from alpaca.data import StockHistoricalDataClient
+import pandas as pd
+import yfinance as yf
 
 from src.broker.alpaca_client import AlpacaBroker
+from src.broker.base import PositionInfo
 from src.config import load_config
-from src.data.market_data import AlpacaDataProvider
 from src.models.trade import (
     SignalRecord,
     TradeRecord,
@@ -19,14 +21,23 @@ from src.models.trade import (
     init_db,
     set_state,
 )
-from src.risk.position_sizer import PositionSizer
-from src.strategy.multi_signal import MultiSignalStrategy
+from src.strategy.combined_momentum import (
+    CombinedMomentumStrategy,
+    MomentumSignal,
+    get_universe,
+)
 from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
-_POLL_INTERVAL_SECONDS = 60  # check every minute when market is open
-_CLOSED_SLEEP_SECONDS = 300  # check every 5 minutes when market is closed
+_POLL_INTERVAL_SECONDS = 60       # check every minute when market is open
+_CLOSED_SLEEP_SECONDS = 300       # check every 5 minutes when market is closed
+_STATE_KEY_REBALANCE = "last_rebalance_yearmonth"
+
+# Sentinel used when a symbol has no current position
+_NO_POSITION = PositionInfo(
+    symbol="", qty=0, avg_entry_price=0.0, market_value=0.0, unrealized_pl=0.0
+)
 
 
 class TradingBot:
@@ -36,25 +47,11 @@ class TradingBot:
         init_db(self._config.db_path)
 
         self._broker = AlpacaBroker(self._config)
-        data_client = StockHistoricalDataClient(
-            api_key=os.getenv('ALPACA_API_KEY'),
-            secret_key=os.getenv('ALPACA_SECRET_KEY'),
+        self._strategy = CombinedMomentumStrategy(
+            top_n=self._config.top_n,
+            momentum_days=self._config.momentum_days,
+            ma_period=self._config.ma_period,
         )
-        self._data = AlpacaDataProvider(data_client)
-        self._strategy = MultiSignalStrategy(
-            short_period=self._config.short_ma_period,
-            long_period=self._config.long_ma_period,
-            rsi_period=self._config.rsi_period,
-            rsi_overbought=self._config.rsi_overbought,
-            rsi_oversold=self._config.rsi_oversold,
-            bb_period=self._config.bb_period,
-            bb_std_dev=self._config.bb_std_dev,
-            macd_fast=self._config.macd_fast,
-            macd_slow=self._config.macd_slow,
-            macd_signal_period=self._config.macd_signal_period,
-            min_confirmations=self._config.min_confirmations,
-        )
-        self._sizer = PositionSizer(self._config)
         self._running = False
 
     def run(self) -> None:
@@ -62,7 +59,7 @@ class TradingBot:
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
 
-        logger.info("Trading bot started — symbols=%s", self._config.symbols)
+        logger.info("Trading bot started — combined momentum strategy")
         account = self._broker.get_account()
         logger.info(
             "Account: equity=%.2f cash=%.2f buying_power=%.2f",
@@ -82,6 +79,10 @@ class TradingBot:
 
         self._shutdown()
 
+    # ------------------------------------------------------------------
+    # Tick: trigger a rebalance on the first trading day of each month
+    # ------------------------------------------------------------------
+
     def _tick(self) -> None:
         if not self._broker.is_market_open():
             clock = self._broker.get_clock()
@@ -92,81 +93,182 @@ class TradingBot:
             time.sleep(_CLOSED_SLEEP_SECONDS)
             return
 
+        now = datetime.now(tz=timezone.utc)
+        current_yearmonth = now.strftime("%Y-%m")
+        last_rebalance = get_state(_STATE_KEY_REBALANCE)
+
+        if last_rebalance == current_yearmonth:
+            logger.debug("Already rebalanced for %s — holding", current_yearmonth)
+            return
+
+        logger.info(
+            "New month detected (%s, last=%s) — triggering rebalance",
+            current_yearmonth,
+            last_rebalance or "never",
+        )
+
+        try:
+            custom = self._config.symbols if self._config.symbols else None
+            universe = get_universe(custom)
+            logger.info("Universe: %d stocks", len(universe))
+
+            mom_signal = self._strategy.compute_signal(universe)
+            self._execute_rebalance(mom_signal)
+
+            # Only mark as done after execution completes without raising
+            set_state(_STATE_KEY_REBALANCE, current_yearmonth)
+            logger.info("Rebalance complete for %s | regime=%s", current_yearmonth, mom_signal.regime)
+        except Exception as exc:
+            logger.error("Rebalance failed — will retry next tick: %s", exc, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Execute rebalance: sells first, then buys
+    # ------------------------------------------------------------------
+
+    def _execute_rebalance(self, mom_signal: MomentumSignal) -> None:
         account = self._broker.get_account()
         positions = self._broker.get_positions()
+        portfolio_value = account.portfolio_value
 
-        for symbol in self._config.symbols:
-            try:
-                self._process_symbol(symbol, account, positions)
-            except Exception as exc:
-                logger.error("Error processing %s: %s", symbol, exc, exc_info=True)
+        if portfolio_value <= 0:
+            logger.error("Portfolio value is zero or negative — aborting rebalance")
+            return
 
-    def _process_symbol(self, symbol, account, positions) -> None:
-        bars_needed = max(
-            self._config.long_ma_period + 1,
-            self._config.bb_period,
-            self._config.macd_slow + self._config.macd_signal_period,
-            self._config.rsi_period + 1,
-        ) + 10  # extra buffer
-        bars = self._data.get_historical_bars(
-            symbol, self._config.bar_timeframe, limit=bars_needed
-        )
-
-        signal = self._strategy.compute_signal(symbol, bars)
-
-        # Persist signal
+        # Create one signal record for the whole rebalance
         signal_record = SignalRecord.create(
-            symbol=signal.symbol,
-            action=signal.action,
-            short_ma=signal.short_ma,
-            long_ma=signal.long_ma,
-            confidence=signal.confidence,
-            signal_timestamp=signal.timestamp,
+            symbol=mom_signal.regime[:10],
+            action="HOLD",
+            short_ma=mom_signal.spy_mom,
+            long_ma=mom_signal.agg_mom,
+            confidence=float(len(mom_signal.targets)),
+            signal_timestamp=mom_signal.timestamp,
         )
 
-        if signal.action == "HOLD":
-            return
+        pos_by_symbol: Dict[str, PositionInfo] = {p.symbol: p for p in positions}
 
-        # Avoid duplicate orders: check if we already processed this bar's signal.
-        # Use the last bar's index timestamp so restarts don't re-fire the same signal.
-        last_bar_ts = str(bars.index[-1]) if not bars.empty else ""
-        last_signal_key = f"last_signal_{symbol}"
-        last_ts = get_state(last_signal_key)
-        current_ts = last_bar_ts
-        if last_ts == current_ts:
-            logger.debug("Duplicate signal for %s — skipping", symbol)
-            return
-        set_state(last_signal_key, current_ts)
+        # Get current prices for all relevant symbols
+        all_symbols = list(set(mom_signal.targets.keys()) | set(pos_by_symbol.keys()))
+        prices = self._get_prices(all_symbols)
 
-        current_price = self._data.get_latest_price(symbol)
-        side = "buy" if signal.action == "BUY" else "sell"
+        # Compute target quantities
+        target_qtys: Dict[str, int] = {}
+        for sym, weight in mom_signal.targets.items():
+            price = prices.get(sym)
+            if not price or price <= 0:
+                logger.warning("No valid price for %s — skipping", sym)
+                continue
+            qty = math.floor(portfolio_value * weight / price)
+            if qty > 0:
+                target_qtys[sym] = qty
 
-        order_request = self._sizer.calculate_order(
-            symbol=symbol,
-            side=side,
-            current_price=current_price,
-            account=account,
-            positions=positions,
+        logger.info(
+            "Rebalance plan | regime=%s targets=%s",
+            mom_signal.regime,
+            {k: v for k, v in target_qtys.items()},
         )
 
-        if order_request is None:
-            return
+        # ── Phase A: SELLS ──────────────────────────────────────────────
+        for sym, pos in pos_by_symbol.items():
+            target_qty = target_qtys.get(sym, 0)
+            sell_qty = pos.qty - target_qty
+            if sell_qty <= 0:
+                continue
+            try:
+                result = self._broker.submit_market_order(sym, sell_qty, "sell")
+                TradeRecord.create(
+                    symbol=result.symbol,
+                    side=result.side,
+                    qty=result.qty,
+                    order_id=result.order_id,
+                    status=result.status,
+                    signal=signal_record,
+                    trade_timestamp=result.submitted_at,
+                )
+                logger.info("SELL %s x%d | order_id=%s", sym, sell_qty, result.order_id)
+            except Exception as exc:
+                logger.error("Failed to sell %s x%d: %s", sym, sell_qty, exc, exc_info=True)
 
-        result = self._broker.submit_market_order(
-            symbol=order_request.symbol,
-            qty=order_request.qty,
-            side=order_request.side,
-        )
+        # Brief pause to allow sell orders to settle before buying
+        if any(pos.qty > target_qtys.get(sym, 0) for sym, pos in pos_by_symbol.items()):
+            logger.info("Waiting 5s for sell orders to settle...")
+            time.sleep(5)
 
-        TradeRecord.create(
-            symbol=result.symbol,
-            side=result.side,
-            qty=result.qty,
-            order_id=result.order_id,
-            status=result.status,
-            signal=signal_record,
-            trade_timestamp=result.submitted_at,
-        )
+        # Refresh account and positions after sells
+        account = self._broker.get_account()
+        positions = self._broker.get_positions()
+        pos_by_symbol = {p.symbol: p for p in positions}
+
+        # ── Phase B: BUYS ───────────────────────────────────────────────
+        for sym, qty in target_qtys.items():
+            current_qty = pos_by_symbol.get(sym, _NO_POSITION).qty
+            buy_qty = qty - current_qty
+            if buy_qty <= 0:
+                continue
+            try:
+                result = self._broker.submit_market_order(sym, buy_qty, "buy")
+                TradeRecord.create(
+                    symbol=result.symbol,
+                    side=result.side,
+                    qty=result.qty,
+                    order_id=result.order_id,
+                    status=result.status,
+                    signal=signal_record,
+                    trade_timestamp=result.submitted_at,
+                )
+                logger.info("BUY %s x%d | order_id=%s", sym, buy_qty, result.order_id)
+            except Exception as exc:
+                logger.error("Failed to buy %s x%d: %s", sym, buy_qty, exc, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Price helpers
+    # ------------------------------------------------------------------
+
+    def _get_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Get current prices for symbols.
+
+        Tries Alpaca position data first (no extra API call for held symbols),
+        then falls back to yfinance for unpriced symbols.
+        """
+        prices: Dict[str, float] = {}
+
+        # Use current positions as a free price source for held symbols
+        try:
+            for pos in self._broker.get_positions():
+                if pos.qty > 0 and pos.symbol in symbols:
+                    prices[pos.symbol] = pos.market_value / pos.qty
+        except Exception as exc:
+            logger.warning("Could not fetch positions for pricing: %s", exc)
+
+        # Fetch remaining symbols via yfinance
+        unpriced = [s for s in symbols if s not in prices]
+        if unpriced:
+            try:
+                data = yf.download(
+                    unpriced,
+                    period="2d",
+                    progress=False,
+                    auto_adjust=True,
+                    group_by="ticker",
+                    threads=True,
+                )
+                for sym in unpriced:
+                    try:
+                        if isinstance(data.columns, pd.MultiIndex):
+                            close = data[sym]["Close"].dropna()
+                        else:
+                            close = data["Close"].dropna()
+                        if not close.empty:
+                            prices[sym] = float(close.iloc[-1])
+                    except (KeyError, TypeError):
+                        logger.warning("Could not extract price for %s from yfinance", sym)
+            except Exception as exc:
+                logger.error("yfinance price fetch failed: %s", exc)
+
+        return prices
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def _handle_shutdown(self, signum, frame) -> None:
         logger.info("Shutdown signal received — stopping bot")

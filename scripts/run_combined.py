@@ -12,6 +12,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]
 
 from src.utils.logging_config import setup_logging
 from backtest.bt_combined import run_backtest
+from src.strategy.combined_momentum import _FALLBACK_UNIVERSE
 
 setup_logging("INFO")
 logger = logging.getLogger(__name__)
@@ -151,12 +152,26 @@ def main() -> None:
         default=3,
         help="Number of momentum stocks to hold (equal-weighted)",
     )
+    parser.add_argument(
+        "--live-universe",
+        action="store_true",
+        help="Use the live bot's ~150-stock S&P 500 universe instead of the default 7-stock universe",
+    )
+    parser.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Rebalance weekly instead of monthly",
+    )
 
     args = parser.parse_args()
 
+    universe = _FALLBACK_UNIVERSE if args.live_universe else None
+    rebalance_freq = "weekly" if args.weekly else "monthly"
     logger.info(
-        "Starting combined backtest: %s → %s | cash=%.0f | top_n=%d",
+        "Starting combined backtest: %s → %s | cash=%.0f | top_n=%d | universe=%s | rebalance=%s",
         args.start, args.end, args.initial_cash, args.top_n,
+        f"{len(universe)} stocks (live)" if universe else "7 stocks (default)",
+        rebalance_freq,
     )
 
     result = run_backtest(
@@ -164,6 +179,8 @@ def main() -> None:
         end_date=args.end,
         initial_cash=args.initial_cash,
         top_n=args.top_n,
+        stock_universe=universe,
+        rebalance_freq=rebalance_freq,
     )
 
     print_summary(result)

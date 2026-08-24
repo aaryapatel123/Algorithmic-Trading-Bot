@@ -1,4 +1,5 @@
 venv/
+.venv/
 .env
 *.db
 __pycache__/
@@ -9,14 +10,14 @@ logs/
 .coverage
 htmlcov/
 dist/
+build/
 *.egg-info/
-.env
-venv/
-__pycache__/
 data/cache/
-logs/
-.env
-venv/
-__pycache__/
-data/cache/
-logs/
+.DS_Store
+
+# Backtest price cache
+backtest/.price_cache/
+
+# Runtime state (regenerated per-run)
+scripts/.signal_state.json
+scripts/.universe_cache.json

@@ -17,7 +17,6 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 STOCK_UNIVERSE = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA"]
-ALL_SYMBOLS = ["SPY", "AGG"] + STOCK_UNIVERSE
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +35,7 @@ class CombinedMomentumStrategy(bt.Strategy):
         ("top_n", 3),
         ("ma_period", 200),
         ("momentum_period", 252),   # ~12 months of trading days
+        ("rebalance_freq", "monthly"),  # "monthly" or "weekly"
         ("printlog", True),
     )
 
@@ -51,7 +51,7 @@ class CombinedMomentumStrategy(bt.Strategy):
             self.spy, period=self.params.ma_period
         )
 
-        self._last_month: int = -1
+        self._last_period: tuple = (-1, -1)
         self._regime: str = "init"
 
     # ------------------------------------------------------------------
@@ -139,10 +139,16 @@ class CombinedMomentumStrategy(bt.Strategy):
             return
 
         dt: datetime.date = self.spy.datetime.date(0)
-        if dt.month == self._last_month:
+        if self.params.rebalance_freq == "weekly":
+            iso = dt.isocalendar()
+            period = (iso[0], iso[1])  # (year, week)
+        else:
+            period = (dt.year, dt.month)
+
+        if period == self._last_period:
             return
 
-        self._last_month = dt.month
+        self._last_period = period
         self._rebalance(dt)
 
     def stop(self):
@@ -229,31 +235,40 @@ def run_backtest(
     end_date: datetime.date | None = None,
     initial_cash: float = 100_000.0,
     top_n: int = 3,
+    stock_universe: list[str] | None = None,
+    rebalance_freq: str = "monthly",
 ) -> dict[str, Any]:
     if start_date is None:
         start_date = datetime.date(2015, 1, 1)
     if end_date is None:
         end_date = datetime.date.today()
 
+    universe = stock_universe if stock_universe is not None else STOCK_UNIVERSE
+    all_symbols = ["SPY", "AGG"] + universe
+
     # Download extra history so the strategy has 252 bars before start_date
     data_start = start_date - datetime.timedelta(days=380)
 
     logger.info(
-        "Running combined backtest | %s → %s | cash=%.0f | top_n=%d",
-        start_date, end_date, initial_cash, top_n,
+        "Running combined backtest | %s → %s | cash=%.0f | top_n=%d | universe=%d stocks | rebalance=%s",
+        start_date, end_date, initial_cash, top_n, len(universe), rebalance_freq,
     )
 
     cerebro = bt.Cerebro()
     cerebro.addstrategy(
         CombinedMomentumStrategy,
         top_n=top_n,
-        printlog=True,
+        rebalance_freq=rebalance_freq,
+        printlog=False,
     )
 
     # Feed order matters: SPY first, AGG second, then stocks
-    for sym in ALL_SYMBOLS:
-        feed = _fetch_feed(sym, data_start, end_date)
-        cerebro.adddata(feed, name=sym)
+    for sym in all_symbols:
+        try:
+            feed = _fetch_feed(sym, data_start, end_date)
+            cerebro.adddata(feed, name=sym)
+        except Exception as exc:
+            logger.warning("Skipping %s — could not fetch data: %s", sym, exc)
 
     cerebro.broker.setcash(initial_cash)
     cerebro.broker.setcommission(commission=0.001)

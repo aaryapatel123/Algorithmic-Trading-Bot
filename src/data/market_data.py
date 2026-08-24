@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import pandas as pd
@@ -52,10 +53,15 @@ class AlpacaDataProvider(DataProvider):
     ) -> Optional[pd.DataFrame]:
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
+                # Provide a start date so Alpaca returns historical bars,
+                # not just the current session's single bar.
+                # Use 2× calendar days to account for weekends/holidays.
+                start = datetime.now(timezone.utc) - timedelta(days=limit * 2)
                 request = StockBarsRequest(
                     symbol_or_symbols=symbol,
                     timeframe=timeframe,
                     limit=limit,
+                    start=start,
                 )
                 barset = self._client.get_stock_bars(request)
                 bars = barset[symbol]
